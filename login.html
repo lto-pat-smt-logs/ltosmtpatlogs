@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Login — LTO PAT/SMT Logs System (CPAO)</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-slate-950 text-slate-100 min-h-screen flex items-center justify-center p-4 font-sans">
+    <div class="w-full max-w-md bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-2xl space-y-5">
+        <div class="flex items-center gap-3 border-b border-slate-800 pb-4">
+            <div class="w-11 h-11 rounded-xl bg-amber-500/20 border border-amber-500/40 flex items-center justify-center font-extrabold text-amber-400 text-base">LTO</div>
+            <div>
+                <h1 class="font-extrabold text-base text-white tracking-tight">PAT/SMT LOGS SYSTEM</h1>
+                <p class="text-xs text-slate-400">Central Public Assistance Office • Sign In</p>
+            </div>
+        </div>
+
+        <div id="loginStatusBanner" class="hidden p-3 rounded-xl text-xs font-semibold border"></div>
+
+        <form id="loginForm" onsubmit="handleSheetLogin(event)" class="space-y-4 text-xs">
+            <div>
+                <label for="loginUsername" class="block text-slate-400 font-bold uppercase text-[10px] mb-1">Username / Operator ID</label>
+                <input type="text" id="loginUsername" autocomplete="username" required placeholder="e.g. admin36" class="w-full bg-slate-950 border border-slate-800 focus:border-sky-500 rounded-xl px-3.5 py-2.5 text-white font-semibold focus:outline-none">
+            </div>
+            <div>
+                <label for="loginPassword" class="block text-slate-400 font-bold uppercase text-[10px] mb-1">Password</label>
+                <div class="relative flex items-center">
+                    <input type="password" id="loginPassword" autocomplete="current-password" required placeholder="Enter password" class="w-full bg-slate-950 border border-slate-800 focus:border-sky-500 rounded-xl px-3.5 py-2.5 pr-16 text-white focus:outline-none">
+                    <button type="button" id="btnToggleLoginPass" onclick="toggleLoginPasswordVisibility()" aria-label="Show or hide password" class="absolute right-2.5 px-2 py-1 text-[10px] font-bold text-slate-400 hover:text-white bg-slate-900 border border-slate-800 rounded-lg">Show</button>
+                </div>
+            </div>
+            <button type="submit" id="btnLoginSubmit" class="w-full py-2.5 bg-blue-600 hover:bg-blue-500 disabled:opacity-60 text-white font-extrabold rounded-xl shadow-lg transition flex items-center justify-center gap-2">
+                <span id="loginBtnLabel">Sign In to System</span>
+            </button>
+        </form>
+
+        <div class="pt-2 border-t border-slate-800 flex items-center justify-between text-[11px] text-slate-400">
+            <span id="usersSourceIndicator">Source: Google Sheets (Users tab)</span>
+            <button type="button" onclick="prefetchSheetUsers(true)" class="text-sky-400 hover:underline font-semibold">Refresh Users</button>
+        </div>
+    </div>
+
+    <script>
+        const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbxDm6TE_t2qJGQCCNsVCluBw552_797Av8I6NNuMdZSGnsoGf_GGm49kcLzTwJ_ck2t/exec";
+        const USERS_CACHE_KEY = "LTO_CPAO_USERS_2026";
+        let cachedSheetUsers = [];
+
+        function setLoginBanner(msg, type = "info") {
+            const el = document.getElementById("loginStatusBanner");
+            if (!el) return;
+            if (!msg) {
+                el.className = "hidden p-3 rounded-xl text-xs font-semibold border";
+                el.textContent = "";
+                return;
+            }
+            const styles = {
+                error: "bg-rose-950/70 border-rose-700/70 text-rose-200",
+                success: "bg-emerald-950/70 border-emerald-700/70 text-emerald-200",
+                info: "bg-sky-950/70 border-sky-700/70 text-sky-200"
+            };
+            el.className = `p-3 rounded-xl text-xs font-semibold border ${styles[type] || styles.info}`;
+            el.textContent = msg;
+        }
+
+        function toggleLoginPasswordVisibility() {
+            const inp = document.getElementById("loginPassword");
+            const btn = document.getElementById("btnToggleLoginPass");
+            if (!inp || !btn) return;
+            const isPass = inp.type === "password";
+            inp.type = isPass ? "text" : "password";
+            btn.textContent = isPass ? "Hide" : "Show";
+        }
+
+        function normalizeSheetUserRow(row) {
+            if (!row || typeof row !== "object") return null;
+            // Flexible column key matching for Google Sheets "Users" worksheet
+            const getField = (keys) => {
+                for (const k of keys) {
+                    if (row[k] !== undefined && row[k] !== null && String(row[k]).trim() !== "") {
+                        return String(row[k]).trim();
+                    }
+                }
+                const lowerMap = {};
+                Object.keys(row).forEach(rk => {
+                    lowerMap[rk.toLowerCase().replace(/[^a-z0-9]/g, "")] = row[rk];
+                });
+                for (const k of keys) {
+                    const normK = k.toLowerCase().replace(/[^a-z0-9]/g, "");
+                    if (lowerMap[normK] !== undefined && lowerMap[normK] !== null && String(lowerMap[normK]).trim() !== "") {
+                        return String(lowerMap[normK]).trim();
+                    }
+                }
+                return "";
+            };
+
+            const toBool = (val, fallback = false) => {
+                if (typeof val === "boolean") return val;
+                if (val === undefined || val === null || String(val).trim() === "") return fallback;
+                const s = String(val).trim().toLowerCase();
+                return ["true", "yes", "1", "y", "allowed", "enabled"].includes(s);
+            };
+
+            const username = getField(["username", "user", "userName", "USER NAME", "USERNAME", "admin", "operator"]);
+            if (!username) return null;
+
+            const pass = getField(["pass", "password", "pwd", "PASS", "PASSWORD"]);
+            const name = getField(["name", "fullName", "full_name", "NAME", "OPERATOR NAME"]) || username;
+            const role = getField(["role", "ROLE", "userRole"]) || "Admin";
+            const defaultPortal = getField(["defaultPortal", "default_portal", "DEFAULT PORTAL", "portal", "assignedPortal"]) || "FACEBOOK";
+            const logColor = getField(["logColor", "log_color", "LOG COLOR", "color"]) || "Default";
+            const isSuper = role.toLowerCase() === "super admin";
+            const isTL = role.toLowerCase() === "admintl" || isSuper;
+
+            return {
+                username,
+                name,
+                role,
+                pass,
+                defaultPortal,
+                portalStartTime: getField(["portalStartTime", "portal_start_time"]) || "",
+                portalEndTime: getField(["portalEndTime", "portal_end_time"]) || "",
+                logColor,
+                canReports: toBool(row.canReports ?? row.can_reports ?? row["CAN REPORTS"], isTL),
+                canDeleteLogs: toBool(row.canDeleteLogs ?? row.can_delete_logs ?? row["CAN DELETE LOGS"], isTL),
+                canManageUsers: toBool(row.canManageUsers ?? row.can_manage_users ?? row["CAN MANAGE USERS"], isSuper),
+                canAccessSettings: toBool(row.canAccessSettings ?? row.can_access_settings ?? row["CAN ACCESS SETTINGS"], isSuper)
+            };
+        }
+
+        function extractUsersArray(payload) {
+            if (Array.isArray(payload)) return payload;
+            if (payload && typeof payload === "object") {
+                if (Array.isArray(payload.users)) return payload.users;
+                if (Array.isArray(payload.data)) return payload.data;
+                if (Array.isArray(payload.rows)) return payload.rows;
+            }
+            return [];
+        }
+
+        async function prefetchSheetUsers(showFeedback = false) {
+            const ind = document.getElementById("usersSourceIndicator");
+            try {
+                if (showFeedback) setLoginBanner("Fetching latest Users worksheet from Google Sheets...", "info");
+                const resp = await fetch(`${APPS_SCRIPT_URL}?action=getUsers&sheet=Users&t=${Date.now()}`, { mode: "cors", cache: "no-store" });
+                if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+                const json = await resp.json();
+                const rawList = extractUsersArray(json);
+                const normalized = rawList.map(normalizeSheetUserRow).filter(Boolean);
+                if (normalized.length > 0) {
+                    cachedSheetUsers = normalized;
+                    try { localStorage.setItem(USERS_CACHE_KEY, JSON.stringify(normalized)); } catch (e) {}
+                    if (ind) ind.textContent = `Source: Google Sheets (${normalized.length} users synced)`;
+                    if (showFeedback) setLoginBanner(`Synced ${normalized.length} user account(s) from Google Sheets Users tab.`, "success");
+                } else if (showFeedback) {
+                    setLoginBanner("Users sheet returned empty; using fallback/cached credentials if available.", "info");
+                }
+            } catch (err) {
+                if (ind) ind.textContent = "Source: Cache / Fallback (Offline)";
+                if (showFeedback) setLoginBanner("Could not reach Google Sheets Users tab. Using cached/default accounts.", "error");
+            }
+        }
+
+        function getCandidateUsersList() {
+            const combined = [];
+            const seen = new Set();
+            const addAll = (arr) => {
+                (arr || []).forEach(u => {
+                    const norm = normalizeSheetUserRow(u) || u;
+                    if (!norm || !norm.username) return;
+                    const key = String(norm.username).trim().toLowerCase();
+                    if (!seen.has(key)) {
+                        seen.add(key);
+                        combined.push(norm);
+                    }
+                });
+            };
+            addAll(cachedSheetUsers);
+            try {
+                const rawCache = localStorage.getItem(USERS_CACHE_KEY);
+                if (rawCache) addAll(JSON.parse(rawCache));
+            } catch (e) {}
+            addAll([
+                { username: "admin36", name: "Admin 36", role: "Super Admin", defaultPortal: "FACEBOOK", pass: "admin123", logColor: "#9a4e2a", canReports: true, canDeleteLogs: true, canManageUsers: true, canAccessSettings: true },
+                { username: "janzen", name: "Janzen Huwee N. Baltores", role: "Admin", defaultPortal: "FACEBOOK", pass: "password", logColor: "Default", canReports: false, canDeleteLogs: false, canManageUsers: false, canAccessSettings: false }
+            ]);
+            return combined;
+        }
+
+        async function handleSheetLogin(e) {
+            e.preventDefault();
+            const usernameInput = document.getElementById("loginUsername").value.trim();
+            const passwordInput = document.getElementById("loginPassword").value;
+            const btn = document.getElementById("btnLoginSubmit");
+            const label = document.getElementById("loginBtnLabel");
+
+            if (!usernameInput || !passwordInput) {
+                setLoginBanner("Please enter both your username and password.", "error");
+                return;
+            }
+
+            if (btn) btn.disabled = true;
+            if (label) label.textContent = "Verifying with Google Sheets Users tab...";
+            setLoginBanner("Checking credentials against Google Sheets Users worksheet...", "info");
+
+            // Always try fresh fetch from Google Sheets first so newly added/edited Users rows work immediately
+            await prefetchSheetUsers(false);
+
+            const candidates = getCandidateUsersList();
+            const targetUserLower = usernameInput.toLowerCase();
+            const matchedUser = candidates.find(u => String(u.username || "").trim().toLowerCase() === targetUserLower);
+
+            // Exact & trimmed password verification
+            const passwordMatches = matchedUser && (
+                String(matchedUser.pass ?? "") === passwordInput ||
+                String(matchedUser.pass ?? "").trim() === passwordInput.trim()
+            );
+
+            if (matchedUser && passwordMatches) {
+                const digitMatch = String(matchedUser.username || "").match(/\d+/) || String(matchedUser.name || "").match(/\d+/);
+                const adminNo = digitMatch && digitMatch[0] ? `ADMIN ${digitMatch[0]}` : `OPERATOR ${String(matchedUser.username).toUpperCase()}`;
+                const sessionUser = {
+                    ...matchedUser,
+                    adminNo,
+                    logColor: matchedUser.logColor || "Default"
+                };
+                sessionStorage.setItem("LTO_ACTIVE_USER", JSON.stringify(sessionUser));
+                setLoginBanner("Login verified! Redirecting to PAT/SMT Logs System...", "success");
+                window.location.replace("index.html");
+                return;
+            }
+
+            if (btn) btn.disabled = false;
+            if (label) label.textContent = "Sign In to System";
+
+            if (!matchedUser) {
+                setLoginBanner(`User "${usernameInput}" was not found in the Google Sheets Users worksheet. Click "Refresh Users" or check spelling.`, "error");
+            } else {
+                setLoginBanner("Incorrect password for this account. Please verify your password in the Users worksheet.", "error");
+            }
+        }
+
+        window.addEventListener("DOMContentLoaded", () => {
+            const urlParams = new URLSearchParams(window.location.search);
+            if (urlParams.get("reason") === "idle") {
+                setLoginBanner("You were signed out automatically after 20 minutes of inactivity.", "info");
+            }
+            prefetchSheetUsers(false);
+        });
+    </script>
+</body>
+</html>
